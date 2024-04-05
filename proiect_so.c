@@ -6,7 +6,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-void list_directory(const char *directory_path) {
+void list_directory(const char *directory_path, int i) {
     DIR *dir = opendir(directory_path);
 
     if (!dir) {
@@ -32,13 +32,21 @@ void list_directory(const char *directory_path) {
         }
 
         if (S_ISDIR(entry_stat.st_mode)) {
-            printf("%s\n", path);
-            list_directory(path);
+            for(int j = 0; j < i; j++)
+            {
+                printf("|   ");
+            }
+            printf("|_ %s\n", entry->d_name);
+            list_directory(path,i+1);
         } else {
-            printf("%s\n", path);
+            for(int j = 0; j < i; j++)
+              {
+                  printf("|   ");
+              }
+            printf("|_ %s\n", entry->d_name);
         }
     }
-
+    i = 0;
     closedir(dir);
 }
 
@@ -47,8 +55,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Usage: %s <directory>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
-
-    list_directory(argv[1]);
+    printf("%s\n",argv[1]);
+    list_directory(argv[1],0);
     return 0;
 }
-
