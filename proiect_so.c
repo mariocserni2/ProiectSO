@@ -5,80 +5,42 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <fcntl.h>
 
-void list_directory(const char *directory_path, int i) {
-    DIR *dir = opendir(directory_path);
+#define BUFFER_SIZE 4096
 
-    if (!dir) {
-        perror("Error opening directory");
-        return;
-    }
-
-    struct dirent *entry;
-    struct stat entry_stat;
-    char path[1024];
-
-    while ((entry = readdir(dir)) != NULL) {
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-            continue;
-        }
-        strcpy(path, directory_path); 
-        strcat(path, "/");            
-        strcat(path, entry->d_name); 
-
-        if (stat(path, &entry_stat) == -1) {
-            perror("stat");
-            continue;
-        }
-
-        if (S_ISDIR(entry_stat.st_mode)) {
-            for(int j = 0; j < i; j++)
-            {
-                printf("|   ");
-            }
-            printf("|_ %s\n", entry->d_name);
-            list_directory(path,i+1);
-        } else {
-            for(int j = 0; j < i; j++)
-              {
-                  printf("|   ");
-              }
-            printf("|_ %s\n", entry->d_name);
-        }
-    }
-    i = 0;
-    closedir(dir);
-}
-
-int main(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <directory>\n", argv[0]);
+char* read_file_to_memory(int fd, size_t *size) {
+    char *content = malloc(BUFFER_SIZE);
+    if (!content) {
+        perror("Failed to allocate memory");
         exit(EXIT_FAILURE);
     }
-    printf("%s\n",argv[1]);
-    list_directory(argv[1],0);
-    return 0;
-}
 
+    char buffer[BUFFER_SIZE];
+    ssize_t bytes_read;
+    *size = 0;
 
-
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <dirent.h>
-#include <string.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <unistd.h>
-
-void write_to_snapshot(FILE *snapshot_file, const char *name, int depth, off_t size) {
-    for (int i = 0; i < depth; i++) {
-        fprintf(snapshot_file, "|   ");
+    while ((bytes_read = read(fd, buffer, BUFFER_SIZE)) > 0) {
+        content = realloc(content, *size + bytes_read + 1);
+        if (!content) {
+            perror("Failed to reallocate memory");
+            exit(EXIT_FAILURE);
+        }
+        memcpy(content + *size, buffer, bytes_read);
+        *size += bytes_read;
     }
-    fprintf(snapshot_file, "|_ %s - %ld\n", name, size);
+
+    if (bytes_read < 0) {
+        perror("Failed to read file");
+        free(content);
+        exit(EXIT_FAILURE);
+    }
+
+    content[*size] = '\0';
+    return content;
 }
 
-void list_directory(const char *directory_path, FILE *snapshot_file, int depth) {
+void list_directory(const char *directory_path, char **snapshot_content, size_t *content_size, int depth) {
     DIR *dir = opendir(directory_path);
     if (!dir) {
         perror("Error opening directory");
@@ -88,6 +50,12 @@ void list_directory(const char *directory_path, FILE *snapshot_file, int depth) 
     struct dirent *entry;
     struct stat entry_stat;
     char path[1024];
+    char buffer[1024];
+    char indent[256] = {0}; 
+
+    for (int i = 0; i < depth; i++) {
+        strcat(indent, "|   ");
+    }
 
     while ((entry = readdir(dir)) != NULL) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
@@ -100,38 +68,77 @@ void list_directory(const char *directory_path, FILE *snapshot_file, int depth) 
             perror("stat");
             continue;
         }
+        snprintf(buffer, sizeof(buffer), "%s|_ %s (%ld bytes)\n", indent, entry->d_name, entry_stat.st_size);
+        
+        size_t buf_len = strlen(buffer);
+        if (*content_size + buf_len >= BUFFER_SIZE) {
+            *snapshot_content = realloc(*snapshot_content, *content_size + buf_len + 1);
+            if (!*snapshot_content) {
+                perror("Failed to reallocate memory");
+                exit(EXIT_FAILURE);
+            }
+        }
+        strcat(*snapshot_content, buffer);
+        *content_size += buf_len;
 
         if (S_ISDIR(entry_stat.st_mode)) {
-            write_to_snapshot(snapshot_file, entry->d_name, depth, entry_stat.st_size);
-            list_directory(path, snapshot_file, depth + 1);
-        } else {
-            write_to_snapshot(snapshot_file, entry->d_name, depth, entry_stat.st_size);
+            list_directory(path, snapshot_content, content_size, depth + 1);
         }
     }
 
     closedir(dir);
 }
 
-void create_snapshot(const char *directory_path, const char *snapshot_filename) {
-    FILE *snapshot_file = fopen(snapshot_filename, "w");
-    if (!snapshot_file) {
-        perror("Error opening snapshot file for writing");
+void process_directory(const char *output_dir, const char *input_dir) {
+    char snapshot_path[1024];
+    snprintf(snapshot_path, sizeof(snapshot_path), "%s/%s_snapshot.txt", output_dir, input_dir);
+
+    int fd_snapshot = open(snapshot_path, O_RDONLY);
+    size_t old_content_size = 0;
+    char *old_snapshot_content = fd_snapshot != -1 ? read_file_to_memory(fd_snapshot, &old_content_size) : NULL;
+    if (fd_snapshot != -1) close(fd_snapshot);
+
+    char *new_snapshot_content = calloc(1, BUFFER_SIZE * 10); 
+    if (!new_snapshot_content) {
+        perror("Failed to allocate memory for new snapshot");
+        free(old_snapshot_content);
         return;
     }
 
-    list_directory(directory_path, snapshot_file, 0);
-    fclose(snapshot_file);
+    size_t new_content_size = 0;
+    list_directory(input_dir, &new_snapshot_content, &new_content_size, 0);
+
+    fd_snapshot = open(snapshot_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd_snapshot == -1) {
+        perror("Failed to open snapshot file for writing");
+        free(old_snapshot_content);
+        free(new_snapshot_content);
+        return;
+    }
+    write(fd_snapshot, new_snapshot_content, strlen(new_snapshot_content));
+    close(fd_snapshot);
+
+    if (!old_snapshot_content || old_content_size != strlen(new_snapshot_content) ||
+        memcmp(new_snapshot_content, old_snapshot_content, strlen(new_snapshot_content)) != 0) {
+        printf("%s was moddified\n", input_dir);
+    }
+
+    free(new_snapshot_content);
+    free(old_snapshot_content);
 }
 
 int main(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <directory>\n", argv[0]);
+    if (argc < 4 || strcmp(argv[1], "-o") != 0) {
+        fprintf(stderr, "Usage: %s -o <output_dir> <dir1> <dir2> ... <dirN>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
-    const char *snapshot_filename = "snapshot.txt";
-    create_snapshot(argv[1], snapshot_filename);
-    // Aici ar trebui să urmeze logica de comparare a snapshot-urilor, dacă este necesară.
-    
+    char *output_dir = argv[2];
+    mkdir(output_dir, 0755);
+
+    for (int i = 3; i < argc; i++) {
+        process_directory(output_dir, argv[i]);
+    }
+
     return 0;
 }
