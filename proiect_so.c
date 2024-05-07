@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/wait.h>
 
 #define BUFFER_SIZE 4096
 
@@ -120,7 +121,7 @@ void process_directory(const char *output_dir, const char *input_dir) {
 
     if (!old_snapshot_content || old_content_size != strlen(new_snapshot_content) ||
         memcmp(new_snapshot_content, old_snapshot_content, strlen(new_snapshot_content)) != 0) {
-        printf("%s was moddified\n", input_dir);
+        printf("%s was modified\n", input_dir);
     }
 
     free(new_snapshot_content);
@@ -135,9 +136,24 @@ int main(int argc, char **argv) {
 
     char *output_dir = argv[2];
     mkdir(output_dir, 0755);
+    pid_t pid;
 
     for (int i = 3; i < argc; i++) {
-        process_directory(output_dir, argv[i]);
+        pid = fork();
+        if (pid == 0) { 
+            process_directory(output_dir, argv[i]);
+            exit(0);
+        } else if (pid < 0) {
+            perror("Failed to fork");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    int status;
+    while ((pid = wait(&status)) > 0) {
+        if (WIFEXITED(status)) {
+            printf("Child with PID %ld exited with status %d.\n", (long)pid, WEXITSTATUS(status));
+        }
     }
 
     return 0;
