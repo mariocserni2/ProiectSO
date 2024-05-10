@@ -10,6 +10,8 @@
 
 #define BUFFER_SIZE 4096
 
+char *safe_dir = NULL;  
+
 char* read_file_to_memory(int fd, size_t *size) {
     char *content = malloc(BUFFER_SIZE);
     if (!content) {
@@ -39,6 +41,23 @@ char* read_file_to_memory(int fd, size_t *size) {
 
     content[*size] = '\0';
     return content;
+}
+
+void check_file_for_malicious_content(const char *file_path) {
+    char command[1024];
+    snprintf(command, sizeof(command), "./verify_for_malicious.sh %s", file_path);
+    if (system(command) != 0) {
+        printf("%s contains malicious words\n", file_path);
+        if (safe_dir != NULL) {
+            char new_path[1024];
+            snprintf(new_path, sizeof(new_path), "%s/%s", safe_dir, strrchr(file_path, '/') + 1);
+            if (rename(file_path, new_path) == -1) {
+                perror("Error moving file to safe directory");
+            } else {
+                printf("Moved %s to %s\n", file_path, new_path);
+            }
+        }
+    }
 }
 
 void list_directory(const char *directory_path, char **snapshot_content, size_t *content_size, int depth) {
@@ -84,6 +103,8 @@ void list_directory(const char *directory_path, char **snapshot_content, size_t 
 
         if (S_ISDIR(entry_stat.st_mode)) {
             list_directory(path, snapshot_content, content_size, depth + 1);
+        } else {
+            check_file_for_malicious_content(path);
         }
     }
 
@@ -130,17 +151,29 @@ void process_directory(const char *output_dir, const char *input_dir) {
 
 int main(int argc, char **argv) {
     if (argc < 4 || strcmp(argv[1], "-o") != 0) {
-        fprintf(stderr, "Usage: %s -o <output_dir> <dir1> <dir2> ... <dirN>\n", argv[0]);
+        fprintf(stderr, "Usage: %s -o <output_dir> [-s <safe_dir>] <dir1> <dir2> ... <dirN>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
     char *output_dir = argv[2];
+    int dir_start = 3;
+
+    if (argc > 3 && strcmp(argv[3], "-s") == 0) {
+        if (argc < 6) {
+            fprintf(stderr, "Usage: %s -o <output_dir> -s <safe_dir> <dir1> <dir2> ... <dirN>\n", argv[0]);
+            exit(EXIT_FAILURE);
+        }
+        safe_dir = argv[4];
+        dir_start = 5;
+        mkdir(safe_dir, 0755); 
+    }
+
     mkdir(output_dir, 0755);
     pid_t pid;
 
-    for (int i = 3; i < argc; i++) {
+    for (int i = dir_start; i < argc; i++) {
         pid = fork();
-        if (pid == 0) { 
+        if (pid == 0) {
             process_directory(output_dir, argv[i]);
             exit(0);
         } else if (pid < 0) {
@@ -158,3 +191,4 @@ int main(int argc, char **argv) {
 
     return 0;
 }
+
